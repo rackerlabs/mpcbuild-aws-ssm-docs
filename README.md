@@ -1,0 +1,1 @@
+# mpcbuild-aws-ssm-docs
