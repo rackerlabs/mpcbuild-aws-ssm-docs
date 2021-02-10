@@ -1,0 +1,96 @@
+{
+  "schemaVersion": "2.2",
+  "description": "Put additional EBS volumes online, either for Windows or Linux. Mounting EFS as well (only for Linux) ",
+  "parameters": {
+    "EBSPaths": {
+      "type": "String",
+      "description": "(Optional) List of mount points for the additional EBS volumes, each separated with a space. Only for Linux instances.",
+      "default": ""
+    },
+    "EBSUnits": {
+      "type": "String",
+      "description": "(Optional) List of units letters to be assigned to the additional EBS volumes. Only for Windows instances.",
+      "default": ""
+    },
+    "EBSDescriptions": {
+      "type": "String",
+      "description": "(Optional) List of descriptions to be assigned to the additional EBS volumes. Only for Windows instances; must match the number and order of unit letters defined.",
+      "default": ""
+    },
+    "EFSDomainName": {
+      "type": "String",
+      "description": "(Optional) Full domain name of the EFS created. Can be the one provided by AWS or using internal Route53 records. Only for Linux instances.",
+      "default": ""
+    },
+    "EFSMountPoint": {
+      "type": "String",
+      "description": "(Optional) Mount point for EFS. Only for Linux instances.",
+      "default": ""
+    }
+  },
+  "mainSteps": [
+    {
+      "action": "aws:runShellScript",
+      "name": "LinuxVolumes",
+      "precondition": {
+        "StringEquals": [
+          "platformType",
+          "Linux"
+        ]
+      },
+      "inputs": {
+        "runCommand": [
+          "#!/bin/bash",
+          "",
+          "disks=$(sudo lsblk  --noheadings --raw | awk '/nvm/ {print substr($1,0,7)} /xvd/ {print substr($1,0,4)}' | uniq -c | grep '1 ' | awk '{print \"/dev/\"$2}')",
+          "paths=({{ EBSPaths }})",
+          "array=($disks)",
+          "i=0",
+          "for path in \"${paths[@]}\";",
+          "do",
+          "  sudo mkdir -p $path;",
+          "done",
+          "for element in \"${array[@]}\";",
+          "do",
+          "  sudo mkfs -t xfs $element > /dev/null",
+          "  UUID=$(sudo blkid -s UUID -o value $element)",
+          "  echo \"UUID=$UUID  ${paths[i]}  xfs  defaults,nofail  0  2\" | sudo tee -a /etc/fstab > /dev/null",
+          "  i=$((i+1));",
+          "done",
+          "efs={{ EFSDomainName }}",
+          "efs_path={{ EFSMountPoint }}",
+          "if [ ! -z $efs ]; then",
+          "  sudo mkdir -p $efs_path",
+          "  echo \"$efs:/ $efs_path  nfs  nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport 0 0\" | sudo tee -a /etc/fstab > /dev/null",
+          "fi",
+          "sudo mount -a",
+          "exit 0"
+        ]
+      }
+    },
+    {
+      "precondition": {
+        "StringEquals": [
+          "platformType",
+          "Windows"
+        ]
+      },
+      "action": "aws:runPowerShellScript",
+      "name": "WindowsVolumes",
+      "inputs": {
+        "timeoutSeconds": 7200,
+        "runCommand": [
+          "$DRIVES = {{ EBSUnits }}",
+          "$DESCRIPTIONS = @({{ EBSDescriptions }})",
+          "$i=0",
+          "New-Item -Name diskpart.txt -ItemType File",
+          "Get-Disk | where OperationalStatus -eq \"Offline\" | Select-Object Number | ForEach-Object {",
+          "echo (\"select disk \" + $_.Number) \"attributes disk clear readonly\" \"online disk\" \"convert mbr\" \"create partition primary\" ('format quick fs=ntfs label=\"' + $DESCRIPTIONS[$i] + '\"') ('assign letter=\"' + $DRIVES[$i] + '\"') | Add-Content -Path diskpart.txt",
+          "$i = $i + 1",
+          "}",
+          "diskpart /s diskpart.txt"
+        ]
+      }
+    }
+  ]
+}

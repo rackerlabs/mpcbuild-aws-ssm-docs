@@ -1,0 +1,312 @@
+{
+  "schemaVersion": "0.3",
+  "description": "Build golden AMI for onboarding process. It start by mounting the proper volumes, patching SO through Patch Manager and then generating the AMI",
+  "assumeRole": "{{ AutomationAssumeRole }}",
+  "parameters": {
+    "InstanceId": {
+      "type": "String",
+      "description": "(Required) Id of the instance to be used as the base for the Golden AMI"
+    },
+    "EBSPaths": {
+      "type": "String",
+      "description": "(Optional) List of mount points for the additional EBS volumes, each separated with a space. Only for Linux instances.",
+      "default": ""
+    },
+    "EBSUnits": {
+      "type": "String",
+      "description": "(Optional) List of units letters to be assigned to the additional EBS volumes. Only for Windows instances.",
+      "default": ""
+    },
+    "EBSDescriptions": {
+      "type": "String",
+      "description": "(Optional) List of descriptions to be assigned to the additional EBS volumes. Only for Windows instances; must match the number and order of unit letters defined.",
+      "default": ""
+    },
+    "EFSDomainName": {
+      "type": "String",
+      "description": "(Optional) Full domain name of the EFS created. Can be the one provided by AWS or using internal Route53 records. Only for Linux instances.",
+      "default": ""
+    },
+    "EFSMountPoint": {
+      "type": "String",
+      "description": "(Optional) Mount point for EFS. Only for Linux instances.",
+      "default": ""
+    },
+    "AutomationAssumeRole": {
+      "type": "String",
+      "description": "(Required) The ARN of the role that allows Automation to perform the actions on your behalf."
+    },
+    "GoldenImageName": {
+      "type": "String",
+      "description": "(Optional) The name of the new AMI that will be created. Default is a system-generated string including the creation time and date.",
+      "default": "GoldenAMI_on_{{global:DATE_TIME}}"
+    },
+    "GoldenImageDescription": {
+      "type": "String",
+      "description": "(Optional) The description of the new AMI that will be created.",
+      "default": "Golden AMI taken from instance {{InstanceId}} on {{global:DATE_TIME}}"
+    },
+    "EncryptImage": {
+      "type": "String",
+      "description": "(Optional) - True or False - Should the final AMI be encrypted?",
+      "default": "False",
+      "allowedPattern": "^True$|^False$"
+    },
+    "KeyIdentifier": {
+      "type": "String",
+      "description": "(Optional) Identifier of the KMS key to be used for the encrypted image. Can be the key id, an alias or the full ARN",
+      "default": "alias/aws/ebs"
+    }
+  },
+  "mainSteps": [
+    {
+      "name": "checkOS",
+      "action": "aws:executeAwsApi",
+      "maxAttempts": 3,
+      "timeoutSeconds": 1200,
+      "onFailure": "Abort",
+      "inputs": {
+        "Service": "ssm",
+        "Api": "DescribeInstanceInformation",
+        "Filters": [
+          {
+            "Key": "InstanceIds",
+            "Values": [
+              "{{InstanceId}}"
+            ]
+          }
+        ]
+      },
+      "outputs": [
+        {
+          "Name": "InstanceOSFamily",
+          "Selector": "$.InstanceInformationList[0].PlatformType",
+          "Type": "String"
+        }
+      ]
+    },
+    {
+      "name": "osPath",
+      "action": "aws:branch",
+      "inputs": {
+        "Choices": [
+          {
+            "NextStep": "updateAWSPVDriver",
+            "Variable": "{{checkOS.InstanceOSFamily}}",
+            "StringEquals": "Windows"
+          },
+          {
+            "NextStep": "mountVolumes",
+            "Variable": "{{checkOS.InstanceOSFamily}}",
+            "StringEquals": "Linux"
+          }
+        ]
+      }
+    },
+    {
+      "name": "updateAWSPVDriver",
+      "action": "aws:runCommand",
+      "maxAttempts": 3,
+      "onFailure": "Abort",
+      "timeoutSeconds": 600,
+      "inputs": {
+        "DocumentName": "AWS-ConfigureAWSPackage",
+        "InstanceIds": [
+          "{{InstanceId}}"
+        ],
+        "Parameters": {
+          "name": "AWSPVDriver",
+          "action": "Install"
+        }
+      }
+    },
+    {
+      "name": "updateAWSEnaNetworkDriver",
+      "action": "aws:runCommand",
+      "maxAttempts": 3,
+      "onFailure": "Abort",
+      "timeoutSeconds": 600,
+      "inputs": {
+        "DocumentName": "AWS-ConfigureAWSPackage",
+        "InstanceIds": [
+          "{{InstanceId}}"
+        ],
+        "Parameters": {
+          "name": "AwsEnaNetworkDriver",
+          "action": "Install"
+        }
+      }
+    },
+    {
+      "name": "updateAWSNVMe",
+      "action": "aws:runCommand",
+      "maxAttempts": 3,
+      "onFailure": "Abort",
+      "timeoutSeconds": 600,
+      "inputs": {
+        "DocumentName": "AWS-ConfigureAWSPackage",
+        "InstanceIds": [
+          "{{InstanceId}}"
+        ],
+        "Parameters": {
+          "name": "AWSNVMe",
+          "action": "Install"
+        }
+      }
+    },
+    {
+      "name": "runSysprepGeneralize",
+      "action": "aws:runCommand",
+      "maxAttempts": 3,
+      "onFailure": "Abort",
+      "timeoutSeconds": 600,
+      "inputs": {
+        "DocumentName": "AWSEC2-RunSysprep",
+        "InstanceIds": [
+          "{{InstanceId}}"
+        ],
+        "Parameters": {
+          "Id": "{{automation:EXECUTION_ID}}"
+        }
+      }
+    },
+    {
+      "name": "stopWinInstance",
+      "action": "aws:changeInstanceState",
+      "maxAttempts": 3,
+      "timeoutSeconds": 3600,
+      "onFailure": "Abort",
+      "inputs": {
+        "InstanceIds": [
+          "{{InstanceId}}"
+        ],
+        "DesiredState": "stopped"
+      }
+    },
+    {
+      "name": "startWinInstance",
+      "action": "aws:changeInstanceState",
+      "maxAttempts": 3,
+      "timeoutSeconds": 3600,
+      "onFailure": "Abort",
+      "inputs": {
+        "InstanceIds": [
+          "{{InstanceId}}"
+        ],
+        "DesiredState": "running"
+      }
+    },
+    {
+      "name": "mountVolumes",
+      "action": "aws:runCommand",
+      "maxAttempts": 3,
+      "timeoutSeconds": 1200,
+      "onFailure": "Abort",
+      "inputs": {
+        "DocumentName": "Rack-MountAdditionalVolumes",
+        "InstanceIds": [
+          "{{InstanceId}}"
+        ],
+        "Parameters": {
+          "EBSPaths": "{{EBSPaths}}",
+          "EBSUnits": "{{EBSUnits}}",
+          "EBSDescriptions": "{{EBSDescriptions}}",
+          "EFSDomainName": "{{EFSDomainName}}",
+          "EFSMountPoint": "{{EFSMountPoint}}"
+        }
+      }
+    },
+    {
+      "name": "patchInstance",
+      "action": "aws:runCommand",
+      "maxAttempts": 3,
+      "timeoutSeconds": 1200,
+      "onFailure": "Abort",
+      "inputs": {
+        "DocumentName": "AWS-RunPatchBaseline",
+        "InstanceIds": [
+          "{{InstanceId}}"
+        ],
+        "Parameters": {
+          "Operation": "Install",
+          "RebootOption": "NoReboot"
+        }
+      }
+    },
+    {
+      "name": "stopInstance",
+      "action": "aws:changeInstanceState",
+      "maxAttempts": 3,
+      "timeoutSeconds": 3600,
+      "onFailure": "Abort",
+      "inputs": {
+        "InstanceIds": [
+          "{{InstanceId}}"
+        ],
+        "DesiredState": "stopped"
+      }
+    },
+    {
+      "name": "createImage",
+      "action": "aws:createImage",
+      "maxAttempts": 3,
+      "onFailure": "Abort",
+      "inputs": {
+        "InstanceId": "{{InstanceId}}",
+        "ImageName": "{{GoldenImageName}}",
+        "ImageDescription": "{{GoldenImageDescription}}"
+      }
+    },
+    {
+      "name": "encryptionChoice",
+      "action": "aws:branch",
+      "inputs": {
+        "Choices": [
+          {
+            "NextStep": "encryptImage",
+            "Variable": "{{EncryptImage}}",
+            "StringEquals": "True"
+          }
+        ],
+        "Default": "startInstance"
+      }
+    },
+    {
+      "name": "encryptImage",
+      "action": "aws:copyImage",
+      "maxAttempts": 3,
+      "onFailure": "Abort",
+      "inputs": {
+        "SourceImageId": "{{createImage.ImageId}}",
+        "SourceRegion": "{{global:REGION}}",
+        "ImageName": "{{GoldenImageName}}",
+        "Encrypted": true,
+        "KmsKeyId": "{{KeyIdentifier}}",
+        "ImageDescription": "Encrypted AMI Generated by EC2 Automation on {{global:DATE_TIME}}"
+      }
+    },
+    {
+      "name": "removeIntermediateImage",
+      "action": "aws:deleteImage",
+      "maxAttempts": 3,
+      "timeoutSeconds": 180,
+      "onFailure": "Abort",
+      "inputs": {
+        "ImageId": "{{createImage.ImageId}}"
+      }
+    },
+    {
+      "name": "startInstance",
+      "action": "aws:changeInstanceState",
+      "maxAttempts": 3,
+      "timeoutSeconds": 3600,
+      "onFailure": "Abort",
+      "inputs": {
+        "InstanceIds": [
+          "{{InstanceId}}"
+        ],
+        "DesiredState": "running"
+      }
+    }
+  ]
+}
