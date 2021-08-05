@@ -84,7 +84,7 @@
           "$DESCRIPTIONS = @({{ EBSDescriptions }})",
           "$i=0",
           "New-Item -Name diskpart.txt -ItemType File",
-          "Get-Disk | where OperationalStatus -eq \"Offline\" | Select-Object Number | ForEach-Object {",
+          "Get-Disk | where PartitionStyle -eq \"RAW\" | Select-Object Number | ForEach-Object {",
           "echo (\"select disk \" + $_.Number) \"attributes disk clear readonly\" \"online disk\" \"convert mbr\" \"create partition primary\" ('format quick fs=ntfs label=\"' + $DESCRIPTIONS[$i] + '\"') ('assign letter=\"' + $DRIVES[$i] + '\"') | Add-Content -Path diskpart.txt",
           "$i = $i + 1",
           "}",
